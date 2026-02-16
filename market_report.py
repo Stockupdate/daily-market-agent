@@ -1,104 +1,173 @@
 import yfinance as yf
 import pandas as pd
+from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+from io import BytesIO
+import base64
 import smtplib
-import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from datetime import datetime
 
-# -----------------------------
-# CONFIG
-# -----------------------------
-SENDER_EMAIL = os.environ["SENDER_EMAIL"]
-SENDER_PASSWORD = os.environ["SENDER_PASSWORD"]
-RECEIVER_EMAIL = os.environ["RECEIVER_EMAIL"]
+# ---------------- CONFIG ----------------
+SENDER_EMAIL = "yourgmail@gmail.com"
+SENDER_PASSWORD = "your-app-password"  # 16-character App Password
+RECEIVER_EMAIL = "receiver@gmail.com"
 
-# Tech Stocks (Indian IT)
-TECH_STOCKS = [
-    "TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS",
-    "TECHM.NS", "LTIM.NS", "PERSISTENT.NS",
-    "COFORGE.NS", "MPHASIS.NS", "LTTS.NS"
-]
+# Commodities to track
+commodities = {
+    "Gold": "GC=F",
+    "Silver": "SI=F",
+    "Crude Oil": "CL=F",
+    "Natural Gas": "NG=F",
+    "Coal": "KOL=F"
+}
 
-# Commodity Stocks (Metals, Oil & Gas)
-COMMODITY_STOCKS = [
-    "RELIANCE.NS", "ONGC.NS", "COALINDIA.NS",
-    "TATASTEEL.NS", "HINDALCO.NS", "JSWSTEEL.NS",
-    "SAIL.NS", "BPCL.NS", "IOC.NS", "GAIL.NS"
-]
+# Example large-cap and mid-cap symbols (replace with NSE/BSE symbols)
+large_caps = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
+              "HINDUNILVR.NS", "SBIN.NS", "KOTAKBANK.NS", "LT.NS", "BHARTIARTL.NS"]
 
-# -----------------------------
-# FETCH DATA
-# -----------------------------
-def get_stock_data(tickers):
-    data = []
-    for ticker in tickers:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="2d")
-        if len(hist) >= 2:
-            close_today = hist["Close"].iloc[-1]
-            close_yesterday = hist["Close"].iloc[-2]
-            pct_change = ((close_today - close_yesterday) / close_yesterday) * 100
-            data.append({
-                "Stock": ticker.replace(".NS", ""),
-                "Price": round(close_today, 2),
-                "Change (%)": round(pct_change, 2)
-            })
-    return pd.DataFrame(data)
+mid_caps = ["MUTHOOTFIN.NS", "MARUTI.NS", "PIIND.NS", "BALKRISIND.NS", "GICRE.NS"]
 
-def format_table(df):
-    return df.to_html(index=False)
+indices = {"SENSEX": "^BSESN", "NIFTY": "^NSEI"}
 
-# -----------------------------
-# MAIN LOGIC
-# -----------------------------
-def generate_report():
-    # SENSEX
-    sensex = yf.Ticker("^BSESN")
-    hist = sensex.history(period="2d")
-    sensex_today = hist["Close"].iloc[-1]
-    sensex_yesterday = hist["Close"].iloc[-2]
-    sensex_change = ((sensex_today - sensex_yesterday) / sensex_yesterday) * 100
+# ---------------- FUNCTIONS ----------------
+def get_weekly_change(symbol):
+    today = datetime.today()
+    last_week = today - timedelta(days=7)
+    data = yf.download(symbol, start=last_week.strftime("%Y-%m-%d"), end=today.strftime("%Y-%m-%d"))
+    if len(data) < 2:
+        return 0
+    first = data['Close'].iloc[0]
+    last = data['Close'].iloc[-1]
+    return round((last - first) / first * 100, 2)
 
-    tech_df = get_stock_data(TECH_STOCKS)
-    comm_df = get_stock_data(COMMODITY_STOCKS)
+def get_daily_top_gainers(symbols, top_n=5):
+    perf = []
+    for sym in symbols:
+        data = yf.download(sym, period="2d")
+        if len(data) < 2:
+            continue
+        pct_change = (data['Close'][-1] - data['Close'][-2]) / data['Close'][-2] * 100
+        perf.append((sym, round(pct_change, 2)))
+    perf.sort(key=lambda x: x[1], reverse=True)
+    return perf[:top_n]
 
-    tech_gainers = tech_df.sort_values("Change (%)", ascending=False).head(10)
-    tech_losers = tech_df.sort_values("Change (%)").head(10)
+def get_daily_bottom_performers(symbols, bottom_n=5):
+    perf = []
+    for sym in symbols:
+        data = yf.download(sym, period="2d")
+        if len(data) < 2:
+            continue
+        pct_change = (data['Close'][-1] - data['Close'][-2]) / data['Close'][-2] * 100
+        perf.append((sym, round(pct_change, 2)))
+    perf.sort(key=lambda x: x[1])
+    return perf[:bottom_n]
 
-    comm_gainers = comm_df.sort_values("Change (%)", ascending=False).head(10)
-    comm_losers = comm_df.sort_values("Change (%)").head(10)
+def get_index_weekly_changes(symbol):
+    today = datetime.today()
+    data = yf.download(symbol, period="10d")
+    changes = []
+    for i in range(0, len(data)-5):
+        last_week_close = data['Close'].iloc[i]
+        this_week_close = data['Close'].iloc[i+5]
+        day = data.index[i].strftime("%A")
+        pct_change = round((this_week_close - last_week_close)/last_week_close*100, 2)
+        changes.append((day, pct_change))
+    return changes, data
 
-    today = datetime.now().strftime("%d %b %Y")
+def plot_chart(data_dict, title):
+    plt.figure(figsize=(10,5))
+    for name, series in data_dict.items():
+        plt.plot(series.index, series.values, label=name)
+    plt.title(title)
+    plt.xlabel("Date")
+    plt.ylabel("% Change")
+    plt.legend()
+    plt.grid(True)
+    # Save to base64 string for embedding
+    buf = BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+    return img_base64
 
-    html = f"""
-    <h2>📊 Indian Market Report – {today}</h2>
-    <h3>SENSEX: {round(sensex_today,2)} ({round(sensex_change,2)}%)</h3>
+# ---------------- PROCESS COMMODITIES ----------------
+commodity_perf = []
+commodity_charts = {}
+for name, sym in commodities.items():
+    change = get_weekly_change(sym)
+    commodity_perf.append((name, change))
+    data = yf.download(sym, period="8d")['Close']
+    commodity_charts[name] = data
+commodity_perf.sort(key=lambda x: x[1], reverse=True)
+top_5_commodities = commodity_perf[:5]
 
-    <h3>🔼 Top Tech Gainers</h3>
-    {format_table(tech_gainers)}
+# ---------------- PROCESS STOCKS ----------------
+top_10_large = get_daily_top_gainers(large_caps, top_n=10)
+top_5_mid = get_daily_top_gainers(mid_caps, top_n=5)
+bottom_5_stocks = get_daily_bottom_performers(large_caps + mid_caps, bottom_n=5)
 
-    <h3>🔽 Top Tech Losers</h3>
-    {format_table(tech_losers)}
+# ---------------- PROCESS INDICES ----------------
+index_changes = {}
+index_charts_data = {}
+for idx_name, idx_sym in indices.items():
+    changes, data = get_index_weekly_changes(idx_sym)
+    index_changes[idx_name] = changes
+    index_charts_data[idx_name] = data['Close']
 
-    <h3>🔼 Top Commodity Gainers</h3>
-    {format_table(comm_gainers)}
+# Generate charts
+commodity_chart_img = plot_chart(commodity_charts, "Top 5 Commodities")
+index_chart_img = plot_chart(index_charts_data, "SENSEX & NIFTY Last Week Prices")
 
-    <h3>🔽 Top Commodity Losers</h3>
-    {format_table(comm_losers)}
-    """
+# ---------------- CREATE HTML REPORT ----------------
+html_content = "<h2>📊 Weekly Market & Commodity Report</h2>"
 
-    return html
+# Commodities Table
+html_content += "<h3>Top 5 Commodity Performers (Week-over-Week)</h3>"
+html_content += "<table border='1' cellpadding='5'><tr><th>Commodity</th><th>Week % Change</th></tr>"
+for name, change in top_5_commodities:
+    html_content += f"<tr><td>{name}</td><td>{change}%</td></tr>"
+html_content += "</table><br>"
+html_content += f"<img src='data:image/png;base64,{commodity_chart_img}' width='700'><br>"
 
-# -----------------------------
-# SEND EMAIL
-# -----------------------------
-def send_email(html_content):
+# Large Cap
+html_content += "<h3>Top 10 Large Cap Performers (Daily)</h3>"
+html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
+for sym, change in top_10_large:
+    html_content += f"<tr><td>{sym}</td><td>{change}%</td></tr>"
+html_content += "</table><br>"
+
+# Mid Cap
+html_content += "<h3>Top 5 Mid Cap Performers (Daily)</h3>"
+html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
+for sym, change in top_5_mid:
+    html_content += f"<tr><td>{sym}</td><td>{change}%</td></tr>"
+html_content += "</table><br>"
+
+# Bottom 5
+html_content += "<h3>Bottom 5 Performers (Daily)</h3>"
+html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
+for sym, change in bottom_5_stocks:
+    html_content += f"<tr><td>{sym}</td><td>{change}%</td></tr>"
+html_content += "</table><br>"
+
+# Indices
+html_content += "<h3>SENSEX & NIFTY Week-over-Week Daily Comparison</h3>"
+for idx_name, changes in index_changes.items():
+    html_content += f"<h4>{idx_name}</h4>"
+    html_content += "<table border='1' cellpadding='5'><tr><th>Day</th><th>% Change</th></tr>"
+    for day, change in changes:
+        html_content += f"<tr><td>{day}</td><td>{change}%</td></tr>"
+    html_content += "</table><br>"
+html_content += f"<img src='data:image/png;base64,{index_chart_img}' width='700'><br>"
+
+# ---------------- SEND EMAIL ----------------
+try:
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL
     msg["To"] = RECEIVER_EMAIL
-    msg["Subject"] = "📊 Daily Indian Market Report"
-
+    msg["Subject"] = "📊 Weekly Market & Commodity Report"
     msg.attach(MIMEText(html_content, "html"))
 
     server = smtplib.SMTP("smtp.gmail.com", 587)
@@ -106,31 +175,7 @@ def send_email(html_content):
     server.login(SENDER_EMAIL, SENDER_PASSWORD)
     server.send_message(msg)
     server.quit()
-
-if __name__ == "__main__":
-    report = generate_report()
-    send_email(report)
-
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-
-def send_email(html_content):
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = SENDER_EMAIL
-        msg["To"] = RECEIVER_EMAIL
-        msg["Subject"] = "📊 Daily Indian Market Report"
-
-        msg.attach(MIMEText(html_content, "html"))
-
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(SENDER_EMAIL, SENDER_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-
-        print("✅ Email sent successfully!")  # Log success
-    except Exception as e:
-        print("❌ Failed to send email:", e)  # Log failure
-        raise
+    print("✅ Email sent successfully!")
+except Exception as e:
+    print("❌ Failed to send email:", e)
+    raise

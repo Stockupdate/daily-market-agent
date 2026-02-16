@@ -110,3 +110,27 @@ def send_email(html_content):
 if __name__ == "__main__":
     report = generate_report()
     send_email(report)
+
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+def send_email(html_content):
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = SENDER_EMAIL
+        msg["To"] = RECEIVER_EMAIL
+        msg["Subject"] = "📊 Daily Indian Market Report"
+
+        msg.attach(MIMEText(html_content, "html"))
+
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+
+        print("✅ Email sent successfully!")  # Log success
+    except Exception as e:
+        print("❌ Failed to send email:", e)  # Log failure
+        raise

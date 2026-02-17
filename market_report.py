@@ -14,16 +14,16 @@ SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "yourgmail@gmail.com")
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "your-app-password")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "receiver@gmail.com")
 
-# Commodities to track
+# Commodities to track - using ETFs for more reliable data
 commodities = {
-    "Gold": "GC=F",
-    "Silver": "SI=F",
-    "Crude Oil": "CL=F",
-    "Natural Gas": "NG=F",
-    "Coal": "KOL"
+    "Gold": "GLD",           # Gold ETF
+    "Silver": "SLV",         # Silver ETF
+    "Crude Oil": "USO",      # Oil ETF
+    "Natural Gas": "UNG",    # Natural Gas ETF
+    "Coal": "KOL"            # Coal ETF
 }
 
-# Example large-cap and mid-cap symbols (replace with NSE/BSE symbols)
+# Example large-cap and mid-cap symbols
 large_caps = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
               "HINDUNILVR.NS", "SBIN.NS", "KOTAKBANK.NS", "LT.NS", "BHARTIARTL.NS"]
 
@@ -34,33 +34,53 @@ indices = {"SENSEX": "^BSESN", "NIFTY": "^NSEI"}
 # ---------------- FUNCTIONS ----------------
 def get_weekly_change(symbol):
     try:
-        today = datetime.today()
-        last_week = today - timedelta(days=7)
-        data = yf.download(symbol, start=last_week.strftime("%Y-%m-%d"), end=today.strftime("%Y-%m-%d"), progress=False)
-        if len(data) < 2:
+        # Get more days to ensure we have enough data
+        end_date = datetime.today()
+        start_date = end_date - timedelta(days=10)
+        
+        data = yf.download(symbol, start=start_date, end=end_date, progress=False)
+        
+        if data.empty or len(data) < 2:
+            print(f"⚠️  No data available for {symbol}")
             return 0
-        first = data['Close'].iloc[0]
-        last = data['Close'].iloc[-1]
-        # Ensure we return a float, not a Series
-        return round(float((last - first) / first * 100), 2)
+        
+        # Get first and last available closing prices
+        first = float(data['Close'].iloc[0])
+        last = float(data['Close'].iloc[-1])
+        
+        change = round((last - first) / first * 100, 2)
+        print(f"✓ {symbol}: {first:.2f} → {last:.2f} = {change}%")
+        return change
+        
     except Exception as e:
-        print(f"Error getting weekly change for {symbol}: {e}")
+        print(f"❌ Error getting weekly change for {symbol}: {e}")
         return 0
 
 def get_daily_top_gainers(symbols, top_n=5):
     perf = []
     for sym in symbols:
         try:
-            data = yf.download(sym, period="2d", progress=False)
-            if len(data) < 2:
+            # Get last 5 days to ensure we have 2 trading days
+            data = yf.download(sym, period="5d", progress=False)
+            
+            if data.empty or len(data) < 2:
+                print(f"⚠️  Insufficient data for {sym}")
                 continue
-            close_last = data['Close'].iloc[-1]
-            close_prev = data['Close'].iloc[-2]
-            pct_change = float((close_last - close_prev) / close_prev * 100)
-            perf.append((sym, round(pct_change, 2)))
+            
+            close_last = float(data['Close'].iloc[-1])
+            close_prev = float(data['Close'].iloc[-2])
+            pct_change = round((close_last - close_prev) / close_prev * 100, 2)
+            perf.append((sym, pct_change))
+            print(f"✓ {sym}: {pct_change}%")
+            
         except Exception as e:
-            print(f"Error processing {sym}: {e}")
+            print(f"❌ Error processing {sym}: {e}")
             continue
+    
+    if not perf:
+        print("⚠️  No performance data collected")
+        return []
+    
     perf.sort(key=lambda x: x[1], reverse=True)
     return perf[:top_n]
 
@@ -68,45 +88,77 @@ def get_daily_bottom_performers(symbols, bottom_n=5):
     perf = []
     for sym in symbols:
         try:
-            data = yf.download(sym, period="2d", progress=False)
-            if len(data) < 2:
+            data = yf.download(sym, period="5d", progress=False)
+            
+            if data.empty or len(data) < 2:
                 continue
-            close_last = data['Close'].iloc[-1]
-            close_prev = data['Close'].iloc[-2]
-            pct_change = float((close_last - close_prev) / close_prev * 100)
-            perf.append((sym, round(pct_change, 2)))
+            
+            close_last = float(data['Close'].iloc[-1])
+            close_prev = float(data['Close'].iloc[-2])
+            pct_change = round((close_last - close_prev) / close_prev * 100, 2)
+            perf.append((sym, pct_change))
+            
         except Exception as e:
-            print(f"Error processing {sym}: {e}")
+            print(f"❌ Error processing {sym}: {e}")
             continue
+    
+    if not perf:
+        return []
+    
     perf.sort(key=lambda x: x[1])
     return perf[:bottom_n]
 
 def get_index_weekly_changes(symbol):
     try:
-        today = datetime.today()
-        data = yf.download(symbol, period="10d", progress=False)
+        # Get more data to ensure we have enough trading days
+        data = yf.download(symbol, period="1mo", progress=False)
+        
+        if data.empty or len(data) < 6:
+            print(f"⚠️  Insufficient data for {symbol}")
+            return [], pd.DataFrame()
+        
         changes = []
-        for i in range(0, len(data)-5):
-            last_week_close = data['Close'].iloc[i]
-            this_week_close = data['Close'].iloc[i+5]
-            day = data.index[i].strftime("%A")
-            pct_change = round(float((this_week_close - last_week_close)/last_week_close*100), 2)
-            changes.append((day, pct_change))
+        # Calculate week-over-week for last 5 trading days
+        if len(data) >= 10:
+            for i in range(len(data) - 5):
+                if i + 5 >= len(data):
+                    break
+                last_week_close = float(data['Close'].iloc[i])
+                this_week_close = float(data['Close'].iloc[i+5])
+                day = data.index[i+5].strftime("%Y-%m-%d")
+                pct_change = round((this_week_close - last_week_close)/last_week_close*100, 2)
+                changes.append((day, pct_change))
+        
         return changes, data
+        
     except Exception as e:
-        print(f"Error getting index changes for {symbol}: {e}")
+        print(f"❌ Error getting index changes for {symbol}: {e}")
         return [], pd.DataFrame()
 
 def plot_chart(data_dict, title):
+    if not data_dict:
+        # Return empty chart if no data
+        plt.figure(figsize=(10,5))
+        plt.text(0.5, 0.5, 'No data available', ha='center', va='center')
+        plt.title(title)
+        buf = BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight')
+        plt.close()
+        buf.seek(0)
+        return base64.b64encode(buf.read()).decode('utf-8')
+    
     plt.figure(figsize=(10,5))
     for name, series in data_dict.items():
-        plt.plot(series.index, series.values, label=name)
+        if not series.empty:
+            plt.plot(series.index, series.values, label=name, marker='o')
     plt.title(title)
     plt.xlabel("Date")
-    plt.ylabel("Price/Value")
+    plt.ylabel("Price")
     plt.legend()
     plt.grid(True)
-    # Save to base64 string for embedding
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    
     buf = BytesIO()
     plt.savefig(buf, format='png', bbox_inches='tight')
     plt.close()
@@ -115,95 +167,168 @@ def plot_chart(data_dict, title):
     return img_base64
 
 # ---------------- PROCESS COMMODITIES ----------------
-print("Processing commodities...")
+print("\n" + "="*50)
+print("PROCESSING COMMODITIES")
+print("="*50)
+
 commodity_perf = []
 commodity_charts = {}
+
 for name, sym in commodities.items():
-    print(f"Fetching {name}...")
+    print(f"\nFetching {name} ({sym})...")
     change = get_weekly_change(sym)
     commodity_perf.append((name, change))
+    
     try:
-        data = yf.download(sym, period="8d", progress=False)['Close']
-        commodity_charts[name] = data
+        data = yf.download(sym, period="1mo", progress=False)
+        if not data.empty:
+            commodity_charts[name] = data['Close']
+        else:
+            print(f"⚠️  No chart data for {name}")
     except Exception as e:
-        print(f"Error getting chart data for {name}: {e}")
+        print(f"❌ Error getting chart data for {name}: {e}")
 
-# Sort by change value (which is now guaranteed to be a float)
+# Sort by change value
 commodity_perf.sort(key=lambda x: x[1], reverse=True)
 top_5_commodities = commodity_perf[:5]
 
+print(f"\n✓ Processed {len(commodity_perf)} commodities")
+
 # ---------------- PROCESS STOCKS ----------------
-print("Processing stocks...")
+print("\n" + "="*50)
+print("PROCESSING STOCKS")
+print("="*50)
+
+print("\nFetching Large Caps...")
 top_10_large = get_daily_top_gainers(large_caps, top_n=10)
+
+print("\nFetching Mid Caps...")
 top_5_mid = get_daily_top_gainers(mid_caps, top_n=5)
+
+print("\nFetching Bottom Performers...")
 bottom_5_stocks = get_daily_bottom_performers(large_caps + mid_caps, bottom_n=5)
 
 # ---------------- PROCESS INDICES ----------------
-print("Processing indices...")
+print("\n" + "="*50)
+print("PROCESSING INDICES")
+print("="*50)
+
 index_changes = {}
 index_charts_data = {}
+
 for idx_name, idx_sym in indices.items():
-    print(f"Fetching {idx_name}...")
+    print(f"\nFetching {idx_name} ({idx_sym})...")
     changes, data = get_index_weekly_changes(idx_sym)
     index_changes[idx_name] = changes
     if not data.empty:
         index_charts_data[idx_name] = data['Close']
+        print(f"✓ Got {len(data)} days of data for {idx_name}")
 
 # Generate charts
-print("Generating charts...")
-commodity_chart_img = plot_chart(commodity_charts, "Top 5 Commodities")
-index_chart_img = plot_chart(index_charts_data, "SENSEX & NIFTY Last Week Prices")
+print("\n" + "="*50)
+print("GENERATING CHARTS")
+print("="*50)
+
+commodity_chart_img = plot_chart(commodity_charts, "Commodities - Last Month")
+index_chart_img = plot_chart(index_charts_data, "SENSEX & NIFTY - Last Month")
 
 # ---------------- CREATE HTML REPORT ----------------
-print("Creating HTML report...")
-html_content = "<h2>📊 Weekly Market & Commodity Report</h2>"
+print("\n" + "="*50)
+print("CREATING HTML REPORT")
+print("="*50)
+
+html_content = """
+<html>
+<head>
+<style>
+table { border-collapse: collapse; margin: 20px 0; }
+th { background-color: #4CAF50; color: white; padding: 10px; }
+td { padding: 8px; }
+tr:nth-child(even) { background-color: #f2f2f2; }
+h2 { color: #333; }
+h3 { color: #666; margin-top: 30px; }
+</style>
+</head>
+<body>
+<h2>📊 Daily Market & Commodity Report</h2>
+<p><strong>Report Date:</strong> """ + datetime.now().strftime("%Y-%m-%d %H:%M UTC") + """</p>
+"""
 
 # Commodities Table
-html_content += "<h3>Top 5 Commodity Performers (Week-over-Week)</h3>"
-html_content += "<table border='1' cellpadding='5'><tr><th>Commodity</th><th>Week % Change</th></tr>"
-for name, change in top_5_commodities:
-    html_content += f"<tr><td>{name}</td><td>{change}%</td></tr>"
-html_content += "</table><br>"
-html_content += f"<img src='data:image/png;base64,{commodity_chart_img}' width='700'><br>"
+html_content += "<h3>🏆 Top 5 Commodity Performers (Week-over-Week)</h3>"
+if top_5_commodities and any(change != 0 for _, change in top_5_commodities):
+    html_content += "<table border='1' cellpadding='5'><tr><th>Commodity</th><th>Week % Change</th></tr>"
+    for name, change in top_5_commodities:
+        color = "green" if change > 0 else "red" if change < 0 else "black"
+        html_content += f"<tr><td>{name}</td><td style='color:{color}'><strong>{change:+.2f}%</strong></td></tr>"
+    html_content += "</table>"
+    html_content += f"<img src='data:image/png;base64,{commodity_chart_img}' width='700'><br>"
+else:
+    html_content += "<p>⚠️ No commodity data available</p>"
 
 # Large Cap
-html_content += "<h3>Top 10 Large Cap Performers (Daily)</h3>"
-html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
-for sym, change in top_10_large:
-    html_content += f"<tr><td>{sym}</td><td>{change}%</td></tr>"
-html_content += "</table><br>"
+html_content += "<h3>📈 Top 10 Large Cap Performers (Daily)</h3>"
+if top_10_large:
+    html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
+    for sym, change in top_10_large:
+        color = "green" if change > 0 else "red"
+        html_content += f"<tr><td>{sym}</td><td style='color:{color}'><strong>{change:+.2f}%</strong></td></tr>"
+    html_content += "</table>"
+else:
+    html_content += "<p>⚠️ No large cap data available</p>"
 
 # Mid Cap
-html_content += "<h3>Top 5 Mid Cap Performers (Daily)</h3>"
-html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
-for sym, change in top_5_mid:
-    html_content += f"<tr><td>{sym}</td><td>{change}%</td></tr>"
-html_content += "</table><br>"
+html_content += "<h3>📊 Top 5 Mid Cap Performers (Daily)</h3>"
+if top_5_mid:
+    html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
+    for sym, change in top_5_mid:
+        color = "green" if change > 0 else "red"
+        html_content += f"<tr><td>{sym}</td><td style='color:{color}'><strong>{change:+.2f}%</strong></td></tr>"
+    html_content += "</table>"
+else:
+    html_content += "<p>⚠️ No mid cap data available</p>"
 
 # Bottom 5
-html_content += "<h3>Bottom 5 Performers (Daily)</h3>"
-html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
-for sym, change in bottom_5_stocks:
-    html_content += f"<tr><td>{sym}</td><td>{change}%</td></tr>"
-html_content += "</table><br>"
+html_content += "<h3>📉 Bottom 5 Performers (Daily)</h3>"
+if bottom_5_stocks:
+    html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
+    for sym, change in bottom_5_stocks:
+        html_content += f"<tr><td>{sym}</td><td style='color:red'><strong>{change:.2f}%</strong></td></tr>"
+    html_content += "</table>"
+else:
+    html_content += "<p>⚠️ No bottom performer data available</p>"
 
 # Indices
-html_content += "<h3>SENSEX & NIFTY Week-over-Week Daily Comparison</h3>"
-for idx_name, changes in index_changes.items():
-    html_content += f"<h4>{idx_name}</h4>"
-    html_content += "<table border='1' cellpadding='5'><tr><th>Day</th><th>% Change</th></tr>"
-    for day, change in changes:
-        html_content += f"<tr><td>{day}</td><td>{change}%</td></tr>"
-    html_content += "</table><br>"
-html_content += f"<img src='data:image/png;base64,{index_chart_img}' width='700'><br>"
+html_content += "<h3>📊 SENSEX & NIFTY Performance</h3>"
+if index_charts_data:
+    html_content += f"<img src='data:image/png;base64,{index_chart_img}' width='700'><br>"
+    
+    for idx_name, changes in index_changes.items():
+        if changes:
+            html_content += f"<h4>{idx_name} - Week-over-Week Comparison</h4>"
+            html_content += "<table border='1' cellpadding='5'><tr><th>Date</th><th>% Change</th></tr>"
+            for day, change in changes[-5:]:  # Show last 5 comparisons
+                color = "green" if change > 0 else "red" if change < 0 else "black"
+                html_content += f"<tr><td>{day}</td><td style='color:{color}'><strong>{change:+.2f}%</strong></td></tr>"
+            html_content += "</table>"
+else:
+    html_content += "<p>⚠️ No index data available</p>"
+
+html_content += """
+</body>
+</html>
+"""
 
 # ---------------- SEND EMAIL ----------------
-print("Sending email...")
+print("\n" + "="*50)
+print("SENDING EMAIL")
+print("="*50)
+
 try:
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL
     msg["To"] = RECEIVER_EMAIL
-    msg["Subject"] = "📊 Weekly Market & Commodity Report"
+    msg["Subject"] = f"📊 Market Report - {datetime.now().strftime('%Y-%m-%d')}"
     msg.attach(MIMEText(html_content, "html"))
 
     server = smtplib.SMTP("smtp.gmail.com", 587)
@@ -212,6 +337,7 @@ try:
     server.send_message(msg)
     server.quit()
     print("✅ Email sent successfully!")
+    print(f"   To: {RECEIVER_EMAIL}")
 except Exception as e:
     print("❌ Failed to send email:", e)
     raise

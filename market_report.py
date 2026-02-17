@@ -8,6 +8,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import os
+import numpy as np
 
 # ---------------- CONFIG ----------------
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "yourgmail@gmail.com")
@@ -20,7 +21,7 @@ commodities = {
     "Silver": "SLV",         # Silver ETF
     "Crude Oil": "USO",      # Oil ETF
     "Natural Gas": "UNG",    # Natural Gas ETF
-    "Coal": "KOL"            # Coal ETF
+    "Copper": "CPER"         # Copper ETF (replacing Coal)
 }
 
 # Example large-cap and mid-cap symbols
@@ -30,6 +31,13 @@ large_caps = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
 mid_caps = ["MUTHOOTFIN.NS", "MARUTI.NS", "PIIND.NS", "BALKRISIND.NS", "GICRE.NS"]
 
 indices = {"SENSEX": "^BSESN", "NIFTY": "^NSEI"}
+
+# ---------------- HELPER FUNCTION ----------------
+def safe_float(value):
+    """Safely convert pandas Series, numpy array, or scalar to float"""
+    if isinstance(value, (pd.Series, np.ndarray)):
+        return float(value.iloc[0] if hasattr(value, 'iloc') else value[0])
+    return float(value)
 
 # ---------------- FUNCTIONS ----------------
 def get_weekly_change(symbol):
@@ -44,9 +52,9 @@ def get_weekly_change(symbol):
             print(f"⚠️  No data available for {symbol}")
             return 0
         
-        # Get first and last available closing prices
-        first = float(data['Close'].iloc[0])
-        last = float(data['Close'].iloc[-1])
+        # Safely extract first and last closing prices
+        first = safe_float(data['Close'].iloc[0])
+        last = safe_float(data['Close'].iloc[-1])
         
         change = round((last - first) / first * 100, 2)
         print(f"✓ {symbol}: {first:.2f} → {last:.2f} = {change}%")
@@ -67,8 +75,8 @@ def get_daily_top_gainers(symbols, top_n=5):
                 print(f"⚠️  Insufficient data for {sym}")
                 continue
             
-            close_last = float(data['Close'].iloc[-1])
-            close_prev = float(data['Close'].iloc[-2])
+            close_last = safe_float(data['Close'].iloc[-1])
+            close_prev = safe_float(data['Close'].iloc[-2])
             pct_change = round((close_last - close_prev) / close_prev * 100, 2)
             perf.append((sym, pct_change))
             print(f"✓ {sym}: {pct_change}%")
@@ -93,8 +101,8 @@ def get_daily_bottom_performers(symbols, bottom_n=5):
             if data.empty or len(data) < 2:
                 continue
             
-            close_last = float(data['Close'].iloc[-1])
-            close_prev = float(data['Close'].iloc[-2])
+            close_last = safe_float(data['Close'].iloc[-1])
+            close_prev = safe_float(data['Close'].iloc[-2])
             pct_change = round((close_last - close_prev) / close_prev * 100, 2)
             perf.append((sym, pct_change))
             
@@ -123,8 +131,8 @@ def get_index_weekly_changes(symbol):
             for i in range(len(data) - 5):
                 if i + 5 >= len(data):
                     break
-                last_week_close = float(data['Close'].iloc[i])
-                this_week_close = float(data['Close'].iloc[i+5])
+                last_week_close = safe_float(data['Close'].iloc[i])
+                this_week_close = safe_float(data['Close'].iloc[i+5])
                 day = data.index[i+5].strftime("%Y-%m-%d")
                 pct_change = round((this_week_close - last_week_close)/last_week_close*100, 2)
                 changes.append((day, pct_change))
@@ -148,15 +156,22 @@ def plot_chart(data_dict, title):
         return base64.b64encode(buf.read()).decode('utf-8')
     
     plt.figure(figsize=(10,5))
+    has_data = False
     for name, series in data_dict.items():
-        if not series.empty:
+        if not series.empty and len(series) > 0:
             plt.plot(series.index, series.values, label=name, marker='o')
+            has_data = True
+    
+    if not has_data:
+        plt.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=plt.gca().transAxes)
+    else:
+        plt.legend()
+        plt.grid(True)
+        plt.xticks(rotation=45)
+    
     plt.title(title)
     plt.xlabel("Date")
     plt.ylabel("Price")
-    plt.legend()
-    plt.grid(True)
-    plt.xticks(rotation=45)
     plt.tight_layout()
     
     buf = BytesIO()
@@ -241,12 +256,18 @@ html_content = """
 <html>
 <head>
 <style>
-table { border-collapse: collapse; margin: 20px 0; }
-th { background-color: #4CAF50; color: white; padding: 10px; }
-td { padding: 8px; }
-tr:nth-child(even) { background-color: #f2f2f2; }
-h2 { color: #333; }
-h3 { color: #666; margin-top: 30px; }
+body { font-family: Arial, sans-serif; padding: 20px; }
+table { border-collapse: collapse; margin: 20px 0; width: 100%; max-width: 600px; }
+th { background-color: #4CAF50; color: white; padding: 10px; text-align: left; }
+td { padding: 8px; border-bottom: 1px solid #ddd; }
+tr:nth-child(even) { background-color: #f9f9f9; }
+tr:hover { background-color: #f5f5f5; }
+h2 { color: #333; border-bottom: 3px solid #4CAF50; padding-bottom: 10px; }
+h3 { color: #666; margin-top: 30px; border-left: 4px solid #4CAF50; padding-left: 10px; }
+img { max-width: 100%; height: auto; margin: 20px 0; }
+.positive { color: green; font-weight: bold; }
+.negative { color: red; font-weight: bold; }
+.neutral { color: #666; }
 </style>
 </head>
 <body>
@@ -257,22 +278,24 @@ h3 { color: #666; margin-top: 30px; }
 # Commodities Table
 html_content += "<h3>🏆 Top 5 Commodity Performers (Week-over-Week)</h3>"
 if top_5_commodities and any(change != 0 for _, change in top_5_commodities):
-    html_content += "<table border='1' cellpadding='5'><tr><th>Commodity</th><th>Week % Change</th></tr>"
+    html_content += "<table><tr><th>Commodity</th><th>Week % Change</th></tr>"
     for name, change in top_5_commodities:
-        color = "green" if change > 0 else "red" if change < 0 else "black"
-        html_content += f"<tr><td>{name}</td><td style='color:{color}'><strong>{change:+.2f}%</strong></td></tr>"
+        css_class = "positive" if change > 0 else "negative" if change < 0 else "neutral"
+        sign = "+" if change > 0 else ""
+        html_content += f"<tr><td>{name}</td><td class='{css_class}'>{sign}{change:.2f}%</td></tr>"
     html_content += "</table>"
-    html_content += f"<img src='data:image/png;base64,{commodity_chart_img}' width='700'><br>"
+    html_content += f"<img src='data:image/png;base64,{commodity_chart_img}' alt='Commodity Chart'>"
 else:
     html_content += "<p>⚠️ No commodity data available</p>"
 
 # Large Cap
 html_content += "<h3>📈 Top 10 Large Cap Performers (Daily)</h3>"
 if top_10_large:
-    html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
+    html_content += "<table><tr><th>Symbol</th><th>% Change</th></tr>"
     for sym, change in top_10_large:
-        color = "green" if change > 0 else "red"
-        html_content += f"<tr><td>{sym}</td><td style='color:{color}'><strong>{change:+.2f}%</strong></td></tr>"
+        css_class = "positive" if change > 0 else "negative"
+        sign = "+" if change > 0 else ""
+        html_content += f"<tr><td>{sym}</td><td class='{css_class}'>{sign}{change:.2f}%</td></tr>"
     html_content += "</table>"
 else:
     html_content += "<p>⚠️ No large cap data available</p>"
@@ -280,10 +303,11 @@ else:
 # Mid Cap
 html_content += "<h3>📊 Top 5 Mid Cap Performers (Daily)</h3>"
 if top_5_mid:
-    html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
+    html_content += "<table><tr><th>Symbol</th><th>% Change</th></tr>"
     for sym, change in top_5_mid:
-        color = "green" if change > 0 else "red"
-        html_content += f"<tr><td>{sym}</td><td style='color:{color}'><strong>{change:+.2f}%</strong></td></tr>"
+        css_class = "positive" if change > 0 else "negative"
+        sign = "+" if change > 0 else ""
+        html_content += f"<tr><td>{sym}</td><td class='{css_class}'>{sign}{change:.2f}%</td></tr>"
     html_content += "</table>"
 else:
     html_content += "<p>⚠️ No mid cap data available</p>"
@@ -291,9 +315,9 @@ else:
 # Bottom 5
 html_content += "<h3>📉 Bottom 5 Performers (Daily)</h3>"
 if bottom_5_stocks:
-    html_content += "<table border='1' cellpadding='5'><tr><th>Symbol</th><th>% Change</th></tr>"
+    html_content += "<table><tr><th>Symbol</th><th>% Change</th></tr>"
     for sym, change in bottom_5_stocks:
-        html_content += f"<tr><td>{sym}</td><td style='color:red'><strong>{change:.2f}%</strong></td></tr>"
+        html_content += f"<tr><td>{sym}</td><td class='negative'>{change:.2f}%</td></tr>"
     html_content += "</table>"
 else:
     html_content += "<p>⚠️ No bottom performer data available</p>"
@@ -301,20 +325,25 @@ else:
 # Indices
 html_content += "<h3>📊 SENSEX & NIFTY Performance</h3>"
 if index_charts_data:
-    html_content += f"<img src='data:image/png;base64,{index_chart_img}' width='700'><br>"
+    html_content += f"<img src='data:image/png;base64,{index_chart_img}' alt='Index Chart'>"
     
     for idx_name, changes in index_changes.items():
         if changes:
             html_content += f"<h4>{idx_name} - Week-over-Week Comparison</h4>"
-            html_content += "<table border='1' cellpadding='5'><tr><th>Date</th><th>% Change</th></tr>"
+            html_content += "<table><tr><th>Date</th><th>% Change</th></tr>"
             for day, change in changes[-5:]:  # Show last 5 comparisons
-                color = "green" if change > 0 else "red" if change < 0 else "black"
-                html_content += f"<tr><td>{day}</td><td style='color:{color}'><strong>{change:+.2f}%</strong></td></tr>"
+                css_class = "positive" if change > 0 else "negative" if change < 0 else "neutral"
+                sign = "+" if change > 0 else ""
+                html_content += f"<tr><td>{day}</td><td class='{css_class}'>{sign}{change:.2f}%</td></tr>"
             html_content += "</table>"
 else:
     html_content += "<p>⚠️ No index data available</p>"
 
 html_content += """
+<hr style="margin-top: 40px;">
+<p style="color: #999; font-size: 12px;">
+<em>This report is generated automatically. Data sourced from Yahoo Finance.</em>
+</p>
 </body>
 </html>
 """
@@ -340,4 +369,6 @@ try:
     print(f"   To: {RECEIVER_EMAIL}")
 except Exception as e:
     print("❌ Failed to send email:", e)
+    import traceback
+    traceback.print_exc()
     raise

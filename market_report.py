@@ -7,11 +7,12 @@ import base64
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import os
 
 # ---------------- CONFIG ----------------
-SENDER_EMAIL = "yourgmail@gmail.com"
-SENDER_PASSWORD = "your-app-password"  # 16-character App Password
-RECEIVER_EMAIL = "receiver@gmail.com"
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "yourgmail@gmail.com")
+SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD", "your-app-password")
+RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "receiver@gmail.com")
 
 # Commodities to track
 commodities = {
@@ -19,7 +20,7 @@ commodities = {
     "Silver": "SI=F",
     "Crude Oil": "CL=F",
     "Natural Gas": "NG=F",
-    "Coal": "KOL=F"
+    "Coal": "KOL"
 }
 
 # Example large-cap and mid-cap symbols (replace with NSE/BSE symbols)
@@ -32,48 +33,69 @@ indices = {"SENSEX": "^BSESN", "NIFTY": "^NSEI"}
 
 # ---------------- FUNCTIONS ----------------
 def get_weekly_change(symbol):
-    today = datetime.today()
-    last_week = today - timedelta(days=7)
-    data = yf.download(symbol, start=last_week.strftime("%Y-%m-%d"), end=today.strftime("%Y-%m-%d"))
-    if len(data) < 2:
+    try:
+        today = datetime.today()
+        last_week = today - timedelta(days=7)
+        data = yf.download(symbol, start=last_week.strftime("%Y-%m-%d"), end=today.strftime("%Y-%m-%d"), progress=False)
+        if len(data) < 2:
+            return 0
+        first = data['Close'].iloc[0]
+        last = data['Close'].iloc[-1]
+        # Ensure we return a float, not a Series
+        return round(float((last - first) / first * 100), 2)
+    except Exception as e:
+        print(f"Error getting weekly change for {symbol}: {e}")
         return 0
-    first = data['Close'].iloc[0]
-    last = data['Close'].iloc[-1]
-    return round((last - first) / first * 100, 2)
 
 def get_daily_top_gainers(symbols, top_n=5):
     perf = []
     for sym in symbols:
-        data = yf.download(sym, period="2d")
-        if len(data) < 2:
+        try:
+            data = yf.download(sym, period="2d", progress=False)
+            if len(data) < 2:
+                continue
+            close_last = data['Close'].iloc[-1]
+            close_prev = data['Close'].iloc[-2]
+            pct_change = float((close_last - close_prev) / close_prev * 100)
+            perf.append((sym, round(pct_change, 2)))
+        except Exception as e:
+            print(f"Error processing {sym}: {e}")
             continue
-        pct_change = (data['Close'][-1] - data['Close'][-2]) / data['Close'][-2] * 100
-        perf.append((sym, round(pct_change, 2)))
     perf.sort(key=lambda x: x[1], reverse=True)
     return perf[:top_n]
 
 def get_daily_bottom_performers(symbols, bottom_n=5):
     perf = []
     for sym in symbols:
-        data = yf.download(sym, period="2d")
-        if len(data) < 2:
+        try:
+            data = yf.download(sym, period="2d", progress=False)
+            if len(data) < 2:
+                continue
+            close_last = data['Close'].iloc[-1]
+            close_prev = data['Close'].iloc[-2]
+            pct_change = float((close_last - close_prev) / close_prev * 100)
+            perf.append((sym, round(pct_change, 2)))
+        except Exception as e:
+            print(f"Error processing {sym}: {e}")
             continue
-        pct_change = (data['Close'][-1] - data['Close'][-2]) / data['Close'][-2] * 100
-        perf.append((sym, round(pct_change, 2)))
     perf.sort(key=lambda x: x[1])
     return perf[:bottom_n]
 
 def get_index_weekly_changes(symbol):
-    today = datetime.today()
-    data = yf.download(symbol, period="10d")
-    changes = []
-    for i in range(0, len(data)-5):
-        last_week_close = data['Close'].iloc[i]
-        this_week_close = data['Close'].iloc[i+5]
-        day = data.index[i].strftime("%A")
-        pct_change = round((this_week_close - last_week_close)/last_week_close*100, 2)
-        changes.append((day, pct_change))
-    return changes, data
+    try:
+        today = datetime.today()
+        data = yf.download(symbol, period="10d", progress=False)
+        changes = []
+        for i in range(0, len(data)-5):
+            last_week_close = data['Close'].iloc[i]
+            this_week_close = data['Close'].iloc[i+5]
+            day = data.index[i].strftime("%A")
+            pct_change = round(float((this_week_close - last_week_close)/last_week_close*100), 2)
+            changes.append((day, pct_change))
+        return changes, data
+    except Exception as e:
+        print(f"Error getting index changes for {symbol}: {e}")
+        return [], pd.DataFrame()
 
 def plot_chart(data_dict, title):
     plt.figure(figsize=(10,5))
@@ -81,7 +103,7 @@ def plot_chart(data_dict, title):
         plt.plot(series.index, series.values, label=name)
     plt.title(title)
     plt.xlabel("Date")
-    plt.ylabel("% Change")
+    plt.ylabel("Price/Value")
     plt.legend()
     plt.grid(True)
     # Save to base64 string for embedding
@@ -93,34 +115,47 @@ def plot_chart(data_dict, title):
     return img_base64
 
 # ---------------- PROCESS COMMODITIES ----------------
+print("Processing commodities...")
 commodity_perf = []
 commodity_charts = {}
 for name, sym in commodities.items():
+    print(f"Fetching {name}...")
     change = get_weekly_change(sym)
     commodity_perf.append((name, change))
-    data = yf.download(sym, period="8d")['Close']
-    commodity_charts[name] = data
+    try:
+        data = yf.download(sym, period="8d", progress=False)['Close']
+        commodity_charts[name] = data
+    except Exception as e:
+        print(f"Error getting chart data for {name}: {e}")
+
+# Sort by change value (which is now guaranteed to be a float)
 commodity_perf.sort(key=lambda x: x[1], reverse=True)
 top_5_commodities = commodity_perf[:5]
 
 # ---------------- PROCESS STOCKS ----------------
+print("Processing stocks...")
 top_10_large = get_daily_top_gainers(large_caps, top_n=10)
 top_5_mid = get_daily_top_gainers(mid_caps, top_n=5)
 bottom_5_stocks = get_daily_bottom_performers(large_caps + mid_caps, bottom_n=5)
 
 # ---------------- PROCESS INDICES ----------------
+print("Processing indices...")
 index_changes = {}
 index_charts_data = {}
 for idx_name, idx_sym in indices.items():
+    print(f"Fetching {idx_name}...")
     changes, data = get_index_weekly_changes(idx_sym)
     index_changes[idx_name] = changes
-    index_charts_data[idx_name] = data['Close']
+    if not data.empty:
+        index_charts_data[idx_name] = data['Close']
 
 # Generate charts
+print("Generating charts...")
 commodity_chart_img = plot_chart(commodity_charts, "Top 5 Commodities")
 index_chart_img = plot_chart(index_charts_data, "SENSEX & NIFTY Last Week Prices")
 
 # ---------------- CREATE HTML REPORT ----------------
+print("Creating HTML report...")
 html_content = "<h2>📊 Weekly Market & Commodity Report</h2>"
 
 # Commodities Table
@@ -163,6 +198,7 @@ for idx_name, changes in index_changes.items():
 html_content += f"<img src='data:image/png;base64,{index_chart_img}' width='700'><br>"
 
 # ---------------- SEND EMAIL ----------------
+print("Sending email...")
 try:
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL

@@ -2,17 +2,17 @@ name: Daily Market Report
 
 on:
   schedule:
-    # Morning Report - 8:00 AM IST (Market Opening)
-    - cron: '30 2 * * 1-5'
+    # Market Opening Report - 9:30 AM IST (4:00 AM UTC)
+    # Runs 15 minutes after market opens to capture opening prices
+    - cron: '0 4 * * 1-5'
     
-    # Mid-Day Report - 12:30 PM IST (Lunch Time)
-    - cron: '0 7 * * 1-5'
+    # Mid-Day Report - 1:00 PM IST (7:30 AM UTC)
+    # Runs at midday to show morning session performance
+    - cron: '30 7 * * 1-5'
     
-    # Afternoon Report - 3:30 PM IST (Just Before Market Close)
-    - cron: '0 10 * * 1-5'
-    
-    # Evening Report - 6:00 PM IST (After Market Close)
-    - cron: '30 12 * * 1-5'
+    # Pre-Close Report - 3:15 PM IST (9:45 AM UTC)
+    # Runs 15 minutes before market closes for final positioning
+    - cron: '45 9 * * 1-5'
     
   workflow_dispatch: # Allows manual trigger anytime
 

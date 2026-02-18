@@ -97,98 +97,100 @@ def safe_float(value):
     return float(value)
 
 # ---------------- FUNCTIONS ----------------
-def get_multi_timeframe_change(symbol):
+def get_intraday_changes(symbol):
     """
-    Get price changes across multiple timeframes
-    Returns: (current_price, 1day%, 1week%, 3month%, 6month%)
+    Get intraday price changes
+    Returns: (current_price, 1day%, prev_close_to_open%, open_to_midday%, midday_to_close%)
+    Midday = 1:00 PM IST (13:00)
     """
     try:
-        # Get 7 months of data to ensure we have enough for all timeframes
-        end_date = datetime.today()
-        start_date = end_date - timedelta(days=210)  # ~7 months
+        from datetime import timezone
         
-        data = yf.download(symbol, start=start_date, end=end_date, progress=False)
+        # Get today's intraday data (1-minute intervals)
+        today = datetime.today()
         
-        if data.empty or len(data) < 2:
-            print(f"⚠️  No data available for {symbol}")
-            return 0, 0, 0, 0, 0
-        
-        # Current price
-        current_price = safe_float(data['Close'].iloc[-1])
-        
-        # 1-day change (if we have at least 2 days)
+        # First get yesterday's close for 1-day change
+        yesterday_data = yf.download(symbol, period="5d", progress=False)
+        prev_close = 0
         day_1_change = 0
-        if len(data) >= 2:
-            price_1d_ago = safe_float(data['Close'].iloc[-2])
-            day_1_change = round((current_price - price_1d_ago) / price_1d_ago * 100, 2)
         
-        # 1-week change (approximately 5 trading days)
-        week_1_change = 0
-        if len(data) >= 6:
-            price_1w_ago = safe_float(data['Close'].iloc[-6])
-            week_1_change = round((current_price - price_1w_ago) / price_1w_ago * 100, 2)
+        if not yesterday_data.empty and len(yesterday_data) >= 2:
+            prev_close = safe_float(yesterday_data['Close'].iloc[-2])
+            current_close = safe_float(yesterday_data['Close'].iloc[-1])
+            day_1_change = round((current_close - prev_close) / prev_close * 100, 2)
         
-        # 3-month change (approximately 63 trading days)
-        month_3_change = 0
-        if len(data) >= 64:
-            price_3m_ago = safe_float(data['Close'].iloc[-64])
-            month_3_change = round((current_price - price_3m_ago) / price_3m_ago * 100, 2)
+        # Get intraday data with 5-minute intervals (more reliable than 1-min)
+        intraday_data = yf.download(symbol, period="1d", interval="5m", progress=False)
         
-        # 6-month change (approximately 126 trading days)
-        month_6_change = 0
-        if len(data) >= 127:
-            price_6m_ago = safe_float(data['Close'].iloc[-127])
-            month_6_change = round((current_price - price_6m_ago) / price_6m_ago * 100, 2)
+        if intraday_data.empty or len(intraday_data) < 3:
+            print(f"⚠️  No intraday data for {symbol}, using daily close only")
+            current_price = safe_float(yesterday_data['Close'].iloc[-1]) if not yesterday_data.empty else 0
+            return current_price, day_1_change, 0, 0, 0
         
-        print(f"✓ {symbol}: ${current_price:.2f} | 1D: {day_1_change:+.2f}% | 1W: {week_1_change:+.2f}% | 3M: {month_3_change:+.2f}% | 6M: {month_6_change:+.2f}%")
-        return current_price, day_1_change, week_1_change, month_3_change, month_6_change
+        # Extract key prices
+        today_open = safe_float(intraday_data['Open'].iloc[0])
+        current_price = safe_float(intraday_data['Close'].iloc[-1])
+        
+        # Find midday price (around 1:00 PM IST = 07:30 UTC)
+        # Convert index to timezone-aware if needed
+        midday_price = today_open  # Default fallback
+        
+        for idx, row in intraday_data.iterrows():
+            # Get hour from the timestamp
+            timestamp_hour = idx.hour if hasattr(idx, 'hour') else 0
+            # Assuming data is in IST, look for 13:00 (1 PM)
+            # If data is in UTC, 1 PM IST = 7:30 AM UTC, so look for hour 7
+            if timestamp_hour >= 7 and timestamp_hour <= 8:  # Around 1 PM IST (7:30 UTC)
+                midday_price = safe_float(row['Close'])
+                break
+        
+        # If we couldn't find midday, estimate it as middle of the day
+        if midday_price == today_open and len(intraday_data) > 3:
+            mid_index = len(intraday_data) // 2
+            midday_price = safe_float(intraday_data['Close'].iloc[mid_index])
+        
+        # Calculate changes
+        prev_close_to_open = 0
+        if prev_close > 0:
+            prev_close_to_open = round((today_open - prev_close) / prev_close * 100, 2)
+        
+        open_to_midday = 0
+        if today_open > 0:
+            open_to_midday = round((midday_price - today_open) / today_open * 100, 2)
+        
+        midday_to_close = 0
+        if midday_price > 0:
+            midday_to_close = round((current_price - midday_price) / midday_price * 100, 2)
+        
+        print(f"✓ {symbol}: ₹{current_price:.2f} | 1D: {day_1_change:+.2f}% | Gap: {prev_close_to_open:+.2f}% | Morning: {open_to_midday:+.2f}% | Afternoon: {midday_to_close:+.2f}%")
+        
+        return current_price, day_1_change, prev_close_to_open, open_to_midday, midday_to_close
         
     except Exception as e:
-        print(f"❌ Error getting changes for {symbol}: {e}")
+        print(f"❌ Error getting intraday changes for {symbol}: {e}")
+        # Fallback to daily data only
+        try:
+            data = yf.download(symbol, period="5d", progress=False)
+            if not data.empty and len(data) >= 2:
+                current_price = safe_float(data['Close'].iloc[-1])
+                prev_close = safe_float(data['Close'].iloc[-2])
+                day_1_change = round((current_price - prev_close) / prev_close * 100, 2)
+                return current_price, day_1_change, 0, 0, 0
+        except:
+            pass
         return 0, 0, 0, 0, 0
 
 def get_daily_top_gainers(symbols, top_n=5):
     perf = []
     for sym in symbols:
         try:
-            # Get 7 months of data for all timeframes
-            end_date = datetime.today()
-            start_date = end_date - timedelta(days=210)
-            data = yf.download(sym, start=start_date, end=end_date, progress=False)
+            price, day_1, gap, morning, afternoon = get_intraday_changes(sym)
             
-            if data.empty or len(data) < 2:
+            if price == 0:
                 print(f"⚠️  Insufficient data for {sym}")
                 continue
             
-            # Current price
-            current_price = safe_float(data['Close'].iloc[-1])
-            
-            # 1-day change
-            day_1_change = 0
-            if len(data) >= 2:
-                price_1d_ago = safe_float(data['Close'].iloc[-2])
-                day_1_change = round((current_price - price_1d_ago) / price_1d_ago * 100, 2)
-            
-            # 1-week change
-            week_1_change = 0
-            if len(data) >= 6:
-                price_1w_ago = safe_float(data['Close'].iloc[-6])
-                week_1_change = round((current_price - price_1w_ago) / price_1w_ago * 100, 2)
-            
-            # 3-month change
-            month_3_change = 0
-            if len(data) >= 64:
-                price_3m_ago = safe_float(data['Close'].iloc[-64])
-                month_3_change = round((current_price - price_3m_ago) / price_3m_ago * 100, 2)
-            
-            # 6-month change
-            month_6_change = 0
-            if len(data) >= 127:
-                price_6m_ago = safe_float(data['Close'].iloc[-127])
-                month_6_change = round((current_price - price_6m_ago) / price_6m_ago * 100, 2)
-            
-            perf.append((sym, current_price, day_1_change, week_1_change, month_3_change, month_6_change))
-            print(f"✓ {sym}: ₹{current_price:.2f} | 1D: {day_1_change:+.2f}% | 1W: {week_1_change:+.2f}%")
+            perf.append((sym, price, day_1, gap, morning, afternoon))
             
         except Exception as e:
             print(f"❌ Error processing {sym}: {e}")
@@ -206,42 +208,12 @@ def get_daily_bottom_performers(symbols, bottom_n=5):
     perf = []
     for sym in symbols:
         try:
-            # Get 7 months of data for all timeframes
-            end_date = datetime.today()
-            start_date = end_date - timedelta(days=210)
-            data = yf.download(sym, start=start_date, end=end_date, progress=False)
+            price, day_1, gap, morning, afternoon = get_intraday_changes(sym)
             
-            if data.empty or len(data) < 2:
+            if price == 0:
                 continue
             
-            # Current price
-            current_price = safe_float(data['Close'].iloc[-1])
-            
-            # 1-day change
-            day_1_change = 0
-            if len(data) >= 2:
-                price_1d_ago = safe_float(data['Close'].iloc[-2])
-                day_1_change = round((current_price - price_1d_ago) / price_1d_ago * 100, 2)
-            
-            # 1-week change
-            week_1_change = 0
-            if len(data) >= 6:
-                price_1w_ago = safe_float(data['Close'].iloc[-6])
-                week_1_change = round((current_price - price_1w_ago) / price_1w_ago * 100, 2)
-            
-            # 3-month change
-            month_3_change = 0
-            if len(data) >= 64:
-                price_3m_ago = safe_float(data['Close'].iloc[-64])
-                month_3_change = round((current_price - price_3m_ago) / price_3m_ago * 100, 2)
-            
-            # 6-month change
-            month_6_change = 0
-            if len(data) >= 127:
-                price_6m_ago = safe_float(data['Close'].iloc[-127])
-                month_6_change = round((current_price - price_6m_ago) / price_6m_ago * 100, 2)
-            
-            perf.append((sym, current_price, day_1_change, week_1_change, month_3_change, month_6_change))
+            perf.append((sym, price, day_1, gap, morning, afternoon))
             
         except Exception as e:
             print(f"❌ Error processing {sym}: {e}")
@@ -329,8 +301,8 @@ commodity_charts = {}
 
 for name, sym in commodities.items():
     print(f"\nFetching {name} ({sym})...")
-    price, day_1, week_1, month_3, month_6 = get_multi_timeframe_change(sym)
-    commodity_perf.append((name, price, day_1, week_1, month_3, month_6))
+    price, day_1, gap, morning, afternoon = get_intraday_changes(sym)
+    commodity_perf.append((name, price, day_1, gap, morning, afternoon))
     
     try:
         data = yf.download(sym, period="1mo", progress=False)
@@ -413,72 +385,67 @@ print("GENERATING MARKET INSIGHTS")
 print("="*50)
 
 def generate_market_insights(commodities, large_caps, mid_caps, small_caps, bottom_performers, indices):
-    """Generate investment tips based on market data"""
+    """Generate investment tips based on intraday market data"""
     insights = []
     
-    # Commodity insights (now with multiple timeframes: name, price, 1d%, 1w%, 3m%, 6m%)
+    # Commodity insights (name, price, 1d%, gap%, morning%, afternoon%)
     if commodities:
         top_commodity = commodities[0]
-        worst_commodity = commodities[-1]
         
-        # Check different timeframes for momentum
         if top_commodity[2] > 3:  # 1-day change > 3%
-            insights.append(f"🟢 <strong>Commodity Momentum:</strong> {top_commodity[0]} is showing strong daily momentum with a {top_commodity[2]:+.2f}% gain. 6-month trend: {top_commodity[5]:+.2f}%.")
-        
-        if worst_commodity[2] < -3:  # 1-day change < -3%
-            insights.append(f"🔴 <strong>Commodity Weakness:</strong> {worst_commodity[0]} declined {worst_commodity[2]:.2f}% today. However, check 3-month trend ({worst_commodity[4]:+.2f}%) for longer-term context.")
+            insights.append(f"🟢 <strong>Commodity Momentum:</strong> {top_commodity[0]} gained {top_commodity[2]:+.2f}% today. Morning session: {top_commodity[4]:+.2f}%, Afternoon: {top_commodity[5]:+.2f}%.")
     
-    # Large cap insights (sym, price, 1d%, 1w%, 3m%, 6m%)
+    # Large cap insights (sym, price, 1d%, gap%, morning%, afternoon%)
     if large_caps and len(large_caps) >= 3:
-        top_3_avg = sum(item[2] for item in large_caps[:3]) / 3
+        top_stock = large_caps[0]
         
-        if top_3_avg > 2:
-            top_stock = large_caps[0]
-            insights.append(f"📈 <strong>Large Cap Leaders:</strong> {top_stock[0]} leading with {top_stock[2]:+.2f}% daily, {top_stock[3]:+.2f}% weekly. Strong consistent momentum across timeframes.")
+        # Analyze intraday momentum
+        if top_stock[2] > 2:
+            if top_stock[4] > 0 and top_stock[5] > 0:
+                insights.append(f"📈 <strong>Sustained Momentum:</strong> {top_stock[0]} up {top_stock[2]:+.2f}% with gains in both sessions (Morning: {top_stock[4]:+.2f}%, Afternoon: {top_stock[5]:+.2f}%). Strong bullish trend.")
+            elif top_stock[5] > top_stock[4]:
+                insights.append(f"📈 <strong>Afternoon Rally:</strong> {top_stock[0]} gained {top_stock[2]:+.2f}% with strong afternoon buying ({top_stock[5]:+.2f}%). Indicates positive sentiment.")
+            else:
+                insights.append(f"📈 <strong>Morning Leader:</strong> {top_stock[0]} up {top_stock[2]:+.2f}%, led by morning gains ({top_stock[4]:+.2f}%). Watch for consolidation.")
         
         # Check for consistent gainers
         consistent_gainers = [stock for stock in large_caps if stock[2] > 1.5]
         if len(consistent_gainers) >= 5:
-            insights.append(f"💚 <strong>Broad Market Strength:</strong> {len(consistent_gainers)} large caps up >1.5% today. Positive market sentiment favors equity exposure.")
+            insights.append(f"💚 <strong>Broad Market Strength:</strong> {len(consistent_gainers)} large caps up >1.5%. Positive sentiment across the board.")
     
     # Mid cap insights
     if mid_caps:
         top_mid = mid_caps[0]
         if top_mid[2] > 3:
-            # Compare short-term vs long-term momentum
-            if top_mid[5] > 15:  # 6-month > 15%
-                insights.append(f"🚀 <strong>Mid Cap Hot Pick:</strong> {top_mid[0]} surged {top_mid[2]:+.2f}% today with strong 6-month gains of {top_mid[5]:+.2f}%. Sustained uptrend.")
-            else:
-                insights.append(f"🚀 <strong>Mid Cap Opportunity:</strong> {top_mid[0]} jumped {top_mid[2]:+.2f}% today. Check 3M/6M trends before entry - may be volatile.")
+            insights.append(f"🚀 <strong>Mid Cap Breakout:</strong> {top_mid[0]} surged {top_mid[2]:+.2f}%. Gap: {top_mid[3]:+.2f}%. Higher risk but strong momentum.")
     
-    # Small cap insights
+    # Small cap insights  
     if small_caps:
         top_small = small_caps[0]
         if top_small[2] > 5:
-            insights.append(f"💎 <strong>Small Cap Breakout:</strong> {top_small[0]} spiked {top_small[2]:+.2f}% today. High volatility - only for risk-tolerant investors.")
-        
-        # Check if small caps are outperforming large caps
-        if small_caps and large_caps:
-            small_avg = sum(s[2] for s in small_caps[:3]) / 3
-            large_avg = sum(l[2] for l in large_caps[:3]) / 3
-            if small_avg > large_avg + 2:
-                insights.append(f"🔥 <strong>Small Cap Outperformance:</strong> Small caps significantly outperforming large caps (avg {small_avg:.1f}% vs {large_avg:.1f}%). Risk-on market mode.")
+            insights.append(f"💎 <strong>Small Cap Spike:</strong> {top_small[0]} jumped {top_small[2]:+.2f}%. High volatility - suitable only for risk-tolerant traders.")
     
-    # Bottom performers - potential opportunities or warnings
+    # Gap analysis across market
+    if large_caps:
+        gap_ups = len([s for s in large_caps if s[3] > 1])  # Gap up > 1%
+        gap_downs = len([s for s in large_caps if s[3] < -1])  # Gap down > 1%
+        
+        if gap_ups > 5:
+            insights.append(f"🌅 <strong>Bullish Open:</strong> {gap_ups} stocks opened with significant gaps up. Strong overnight sentiment.")
+        elif gap_downs > 5:
+            insights.append(f"🌑 <strong>Weak Open:</strong> {gap_downs} stocks gapped down significantly. Cautious market sentiment.")
+    
+    # Bottom performers - intraday analysis
     if bottom_performers and len(bottom_performers) >= 2:
         worst_stock = bottom_performers[0]
         
         if worst_stock[2] < -5:
-            # Check if it's a long-term decline or just today
-            if worst_stock[5] < -20:  # 6-month also very negative
-                insights.append(f"⚠️ <strong>Structural Decline:</strong> {worst_stock[0]} down {worst_stock[2]:.2f}% today and {worst_stock[5]:.2f}% over 6 months. Avoid until fundamentals improve.")
+            if worst_stock[3] < -2:
+                insights.append(f"⚠️ <strong>Gap Down Alert:</strong> {worst_stock[0]} opened {worst_stock[3]:.2f}% lower and ended down {worst_stock[2]:.2f}%. Strong selling pressure.")
+            elif worst_stock[5] < -2:
+                insights.append(f"⚠️ <strong>Afternoon Selloff:</strong> {worst_stock[0]} down {worst_stock[2]:.2f}%, most losses in afternoon ({worst_stock[5]:.2f}%). Late-day weakness.")
             else:
-                insights.append(f"⚠️ <strong>Sharp Drop Alert:</strong> {worst_stock[0]} fell {worst_stock[2]:.2f}% today but 6M trend is {worst_stock[5]:+.2f}%. Could be temporary dip or warning sign - investigate.")
-        
-        # Check if multiple stocks are down significantly
-        heavy_losers = [stock for stock in bottom_performers if stock[2] < -3]
-        if len(heavy_losers) >= 3:
-            insights.append(f"🔻 <strong>Market Weakness Detected:</strong> {len(heavy_losers)} stocks down >3% today. Consider defensive positioning or profit booking.")
+                insights.append(f"⚠️ <strong>Steady Decline:</strong> {worst_stock[0]} fell {worst_stock[2]:.2f}% throughout the day. Negative sentiment.")
     
     # Index insights
     if indices:
@@ -487,9 +454,9 @@ def generate_market_insights(commodities, large_caps, mid_caps, small_caps, bott
                 latest_change = changes[-1][1] if changes else 0
                 
                 if latest_change > 2:
-                    insights.append(f"📊 <strong>{idx_name} Bullish:</strong> Index up {latest_change:+.2f}% week-over-week. Good for long-term SIP investments.")
+                    insights.append(f"📊 <strong>{idx_name} Strong:</strong> Index up {latest_change:+.2f}% week-over-week. Favorable for SIP investments.")
                 elif latest_change < -2:
-                    insights.append(f"📊 <strong>{idx_name} Bearish:</strong> Index down {latest_change:.2f}% week-over-week. Maintain cash reserves, wait for stabilization.")
+                    insights.append(f"📊 <strong>{idx_name} Weak:</strong> Index down {latest_change:.2f}% week-over-week. Consider defensive positioning.")
     
     # General market sentiment
     if large_caps and mid_caps:
@@ -499,12 +466,12 @@ def generate_market_insights(commodities, large_caps, mid_caps, small_caps, bott
         gainer_ratio = total_gainers / total_stocks if total_stocks > 0 else 0
         
         if gainer_ratio > 0.7:
-            insights.append(f"🌟 <strong>Strong Market Breadth:</strong> {int(gainer_ratio*100)}% of stocks in the green. Broad strength favors momentum and growth strategies.")
+            insights.append(f"🌟 <strong>Strong Breadth:</strong> {int(gainer_ratio*100)}% of stocks positive. Broad-based rally favors momentum strategies.")
         elif gainer_ratio < 0.3:
-            insights.append(f"🛡️ <strong>Weak Market Breadth:</strong> Only {int(gainer_ratio*100)}% positive. Consider defensive sectors (FMCG, Pharma) or quality large-caps.")
+            insights.append(f"🛡️ <strong>Weak Breadth:</strong> Only {int(gainer_ratio*100)}% positive. Shift to defensive sectors (FMCG, Pharma, IT).")
     
     # Add disclaimer
-    insights.append("<br><em><strong>⚠️ Disclaimer:</strong> These insights are based on price movements and technical indicators only. Always conduct thorough fundamental analysis, consider your risk tolerance, and consult a financial advisor before making investment decisions. Past performance does not guarantee future results.</em>")
+    insights.append("<br><em><strong>⚠️ Disclaimer:</strong> Insights based on intraday price movements and technical indicators only. Conduct fundamental analysis and consult a financial advisor before investing. Past performance does not guarantee future results.</em>")
     
     return insights
 
@@ -572,36 +539,36 @@ img { max-width: 100%; height: auto; margin: 20px 0; }
 """
 
 # Commodities Table
-html_content += "<h3>🏆 Top 5 Commodity Performers (Multiple Timeframes)</h3>"
+html_content += "<h3>🏆 Top 5 Commodity Performers (Intraday Tracking)</h3>"
 if top_5_commodities and any(day_1 != 0 for _, _, day_1, _, _, _ in top_5_commodities):
-    html_content += "<table><tr><th>Commodity</th><th>Current Price</th><th>1-Day %</th><th>1-Week %</th><th>3-Month %</th><th>6-Month %</th></tr>"
-    for name, price, day_1, week_1, month_3, month_6 in top_5_commodities:
+    html_content += "<table><tr><th>Commodity</th><th>Current Price</th><th>1-Day %</th><th>Gap (Close→Open) %</th><th>Morning (Open→1PM) %</th><th>Afternoon (1PM→Close) %</th></tr>"
+    for name, price, day_1, gap, morning, afternoon in top_5_commodities:
         # Color code each timeframe
         d1_class = "positive" if day_1 > 0 else "negative" if day_1 < 0 else "neutral"
-        w1_class = "positive" if week_1 > 0 else "negative" if week_1 < 0 else "neutral"
-        m3_class = "positive" if month_3 > 0 else "negative" if month_3 < 0 else "neutral"
-        m6_class = "positive" if month_6 > 0 else "negative" if month_6 < 0 else "neutral"
+        gap_class = "positive" if gap > 0 else "negative" if gap < 0 else "neutral"
+        morn_class = "positive" if morning > 0 else "negative" if morning < 0 else "neutral"
+        aft_class = "positive" if afternoon > 0 else "negative" if afternoon < 0 else "neutral"
         
         d1_sign = "+" if day_1 > 0 else ""
-        w1_sign = "+" if week_1 > 0 else ""
-        m3_sign = "+" if month_3 > 0 else ""
-        m6_sign = "+" if month_6 > 0 else ""
+        gap_sign = "+" if gap > 0 else ""
+        morn_sign = "+" if morning > 0 else ""
+        aft_sign = "+" if afternoon > 0 else ""
         
         html_content += f"<tr><td>{name}</td><td>${price:.2f}</td>"
         html_content += f"<td class='{d1_class}'>{d1_sign}{day_1:.2f}%</td>"
-        html_content += f"<td class='{w1_class}'>{w1_sign}{week_1:.2f}%</td>"
-        html_content += f"<td class='{m3_class}'>{m3_sign}{month_3:.2f}%</td>"
-        html_content += f"<td class='{m6_class}'>{m6_sign}{month_6:.2f}%</td></tr>"
+        html_content += f"<td class='{gap_class}'>{gap_sign}{gap:.2f}%</td>"
+        html_content += f"<td class='{morn_class}'>{morn_sign}{morning:.2f}%</td>"
+        html_content += f"<td class='{aft_class}'>{aft_sign}{afternoon:.2f}%</td></tr>"
     html_content += "</table>"
     html_content += f"<img src='data:image/png;base64,{commodity_chart_img}' alt='Commodity Chart'>"
 else:
     html_content += "<p>⚠️ No commodity data available</p>"
 
 # Overall Top Gainers (NEW SECTION)
-html_content += "<h3>🔥 Top 10 Overall Market Gainers (Multiple Timeframes)</h3>"
+html_content += "<h3>🔥 Top 10 Overall Market Gainers (Intraday Tracking)</h3>"
 if top_10_overall:
-    html_content += "<table><tr><th>Rank</th><th>Symbol</th><th>Price</th><th>1-Day %</th><th>1-Week %</th><th>3-Month %</th><th>6-Month %</th></tr>"
-    for idx, (sym, price, day_1, week_1, month_3, month_6) in enumerate(top_10_overall, 1):
+    html_content += "<table><tr><th>Rank</th><th>Symbol</th><th>Price</th><th>1-Day %</th><th>Gap %</th><th>Morning %</th><th>Afternoon %</th></tr>"
+    for idx, (sym, price, day_1, gap, morning, afternoon) in enumerate(top_10_overall, 1):
         # Determine badge based on which list it belongs to
         if sym in large_caps:
             badge = "🔵"
@@ -612,115 +579,115 @@ if top_10_overall:
         
         # Color code each timeframe
         d1_class = "positive" if day_1 > 0 else "negative"
-        w1_class = "positive" if week_1 > 0 else "negative" if week_1 < 0 else "neutral"
-        m3_class = "positive" if month_3 > 0 else "negative" if month_3 < 0 else "neutral"
-        m6_class = "positive" if month_6 > 0 else "negative" if month_6 < 0 else "neutral"
+        gap_class = "positive" if gap > 0 else "negative" if gap < 0 else "neutral"
+        morn_class = "positive" if morning > 0 else "negative" if morning < 0 else "neutral"
+        aft_class = "positive" if afternoon > 0 else "negative" if afternoon < 0 else "neutral"
         
         d1_sign = "+" if day_1 > 0 else ""
-        w1_sign = "+" if week_1 > 0 else ""
-        m3_sign = "+" if month_3 > 0 else ""
-        m6_sign = "+" if month_6 > 0 else ""
+        gap_sign = "+" if gap > 0 else ""
+        morn_sign = "+" if morning > 0 else ""
+        aft_sign = "+" if afternoon > 0 else ""
         
         html_content += f"<tr><td><strong>#{idx}</strong></td><td>{badge} {sym}</td><td>₹{price:.2f}</td>"
         html_content += f"<td class='{d1_class}'>{d1_sign}{day_1:.2f}%</td>"
-        html_content += f"<td class='{w1_class}'>{w1_sign}{week_1:.2f}%</td>"
-        html_content += f"<td class='{m3_class}'>{m3_sign}{month_3:.2f}%</td>"
-        html_content += f"<td class='{m6_class}'>{m6_sign}{month_6:.2f}%</td></tr>"
+        html_content += f"<td class='{gap_class}'>{gap_sign}{gap:.2f}%</td>"
+        html_content += f"<td class='{morn_class}'>{morn_sign}{morning:.2f}%</td>"
+        html_content += f"<td class='{aft_class}'>{aft_sign}{afternoon:.2f}%</td></tr>"
     html_content += "</table>"
 else:
     html_content += "<p>⚠️ No overall market data available</p>"
 
 # Large Cap
-html_content += "<h3>📈 Top 10 Large Cap Performers (Multiple Timeframes)</h3>"
+html_content += "<h3>📈 Top 10 Large Cap Performers (Intraday Tracking)</h3>"
 if top_10_large:
-    html_content += "<table><tr><th>Symbol</th><th>Price</th><th>1-Day %</th><th>1-Week %</th><th>3-Month %</th><th>6-Month %</th></tr>"
-    for sym, price, day_1, week_1, month_3, month_6 in top_10_large:
+    html_content += "<table><tr><th>Symbol</th><th>Price</th><th>1-Day %</th><th>Gap %</th><th>Morning %</th><th>Afternoon %</th></tr>"
+    for sym, price, day_1, gap, morning, afternoon in top_10_large:
         d1_class = "positive" if day_1 > 0 else "negative"
-        w1_class = "positive" if week_1 > 0 else "negative" if week_1 < 0 else "neutral"
-        m3_class = "positive" if month_3 > 0 else "negative" if month_3 < 0 else "neutral"
-        m6_class = "positive" if month_6 > 0 else "negative" if month_6 < 0 else "neutral"
+        gap_class = "positive" if gap > 0 else "negative" if gap < 0 else "neutral"
+        morn_class = "positive" if morning > 0 else "negative" if morning < 0 else "neutral"
+        aft_class = "positive" if afternoon > 0 else "negative" if afternoon < 0 else "neutral"
         
         d1_sign = "+" if day_1 > 0 else ""
-        w1_sign = "+" if week_1 > 0 else ""
-        m3_sign = "+" if month_3 > 0 else ""
-        m6_sign = "+" if month_6 > 0 else ""
+        gap_sign = "+" if gap > 0 else ""
+        morn_sign = "+" if morning > 0 else ""
+        aft_sign = "+" if afternoon > 0 else ""
         
         html_content += f"<tr><td>{sym}</td><td>₹{price:.2f}</td>"
         html_content += f"<td class='{d1_class}'>{d1_sign}{day_1:.2f}%</td>"
-        html_content += f"<td class='{w1_class}'>{w1_sign}{week_1:.2f}%</td>"
-        html_content += f"<td class='{m3_class}'>{m3_sign}{month_3:.2f}%</td>"
-        html_content += f"<td class='{m6_class}'>{m6_sign}{month_6:.2f}%</td></tr>"
+        html_content += f"<td class='{gap_class}'>{gap_sign}{gap:.2f}%</td>"
+        html_content += f"<td class='{morn_class}'>{morn_sign}{morning:.2f}%</td>"
+        html_content += f"<td class='{aft_class}'>{aft_sign}{afternoon:.2f}%</td></tr>"
     html_content += "</table>"
 else:
     html_content += "<p>⚠️ No large cap data available</p>"
 
 # Mid Cap
-html_content += "<h3>📊 Top 5 Mid Cap Performers (Multiple Timeframes)</h3>"
+html_content += "<h3>📊 Top 5 Mid Cap Performers (Intraday Tracking)</h3>"
 if top_5_mid:
-    html_content += "<table><tr><th>Symbol</th><th>Price</th><th>1-Day %</th><th>1-Week %</th><th>3-Month %</th><th>6-Month %</th></tr>"
-    for sym, price, day_1, week_1, month_3, month_6 in top_5_mid:
+    html_content += "<table><tr><th>Symbol</th><th>Price</th><th>1-Day %</th><th>Gap %</th><th>Morning %</th><th>Afternoon %</th></tr>"
+    for sym, price, day_1, gap, morning, afternoon in top_5_mid:
         d1_class = "positive" if day_1 > 0 else "negative"
-        w1_class = "positive" if week_1 > 0 else "negative" if week_1 < 0 else "neutral"
-        m3_class = "positive" if month_3 > 0 else "negative" if month_3 < 0 else "neutral"
-        m6_class = "positive" if month_6 > 0 else "negative" if month_6 < 0 else "neutral"
+        gap_class = "positive" if gap > 0 else "negative" if gap < 0 else "neutral"
+        morn_class = "positive" if morning > 0 else "negative" if morning < 0 else "neutral"
+        aft_class = "positive" if afternoon > 0 else "negative" if afternoon < 0 else "neutral"
         
         d1_sign = "+" if day_1 > 0 else ""
-        w1_sign = "+" if week_1 > 0 else ""
-        m3_sign = "+" if month_3 > 0 else ""
-        m6_sign = "+" if month_6 > 0 else ""
+        gap_sign = "+" if gap > 0 else ""
+        morn_sign = "+" if morning > 0 else ""
+        aft_sign = "+" if afternoon > 0 else ""
         
         html_content += f"<tr><td>{sym}</td><td>₹{price:.2f}</td>"
         html_content += f"<td class='{d1_class}'>{d1_sign}{day_1:.2f}%</td>"
-        html_content += f"<td class='{w1_class}'>{w1_sign}{week_1:.2f}%</td>"
-        html_content += f"<td class='{m3_class}'>{m3_sign}{month_3:.2f}%</td>"
-        html_content += f"<td class='{m6_class}'>{m6_sign}{month_6:.2f}%</td></tr>"
+        html_content += f"<td class='{gap_class}'>{gap_sign}{gap:.2f}%</td>"
+        html_content += f"<td class='{morn_class}'>{morn_sign}{morning:.2f}%</td>"
+        html_content += f"<td class='{aft_class}'>{aft_sign}{afternoon:.2f}%</td></tr>"
     html_content += "</table>"
 else:
     html_content += "<p>⚠️ No mid cap data available</p>"
 
 # Small Cap (NEW SECTION)
-html_content += "<h3>⚡ Top 5 Small Cap Performers (Multiple Timeframes)</h3>"
+html_content += "<h3>⚡ Top 5 Small Cap Performers (Intraday Tracking)</h3>"
 if top_5_small:
-    html_content += "<table><tr><th>Symbol</th><th>Price</th><th>1-Day %</th><th>1-Week %</th><th>3-Month %</th><th>6-Month %</th></tr>"
-    for sym, price, day_1, week_1, month_3, month_6 in top_5_small:
+    html_content += "<table><tr><th>Symbol</th><th>Price</th><th>1-Day %</th><th>Gap %</th><th>Morning %</th><th>Afternoon %</th></tr>"
+    for sym, price, day_1, gap, morning, afternoon in top_5_small:
         d1_class = "positive" if day_1 > 0 else "negative"
-        w1_class = "positive" if week_1 > 0 else "negative" if week_1 < 0 else "neutral"
-        m3_class = "positive" if month_3 > 0 else "negative" if month_3 < 0 else "neutral"
-        m6_class = "positive" if month_6 > 0 else "negative" if month_6 < 0 else "neutral"
+        gap_class = "positive" if gap > 0 else "negative" if gap < 0 else "neutral"
+        morn_class = "positive" if morning > 0 else "negative" if morning < 0 else "neutral"
+        aft_class = "positive" if afternoon > 0 else "negative" if afternoon < 0 else "neutral"
         
         d1_sign = "+" if day_1 > 0 else ""
-        w1_sign = "+" if week_1 > 0 else ""
-        m3_sign = "+" if month_3 > 0 else ""
-        m6_sign = "+" if month_6 > 0 else ""
+        gap_sign = "+" if gap > 0 else ""
+        morn_sign = "+" if morning > 0 else ""
+        aft_sign = "+" if afternoon > 0 else ""
         
         html_content += f"<tr><td>{sym}</td><td>₹{price:.2f}</td>"
         html_content += f"<td class='{d1_class}'>{d1_sign}{day_1:.2f}%</td>"
-        html_content += f"<td class='{w1_class}'>{w1_sign}{week_1:.2f}%</td>"
-        html_content += f"<td class='{m3_class}'>{m3_sign}{month_3:.2f}%</td>"
-        html_content += f"<td class='{m6_class}'>{m6_sign}{month_6:.2f}%</td></tr>"
+        html_content += f"<td class='{gap_class}'>{gap_sign}{gap:.2f}%</td>"
+        html_content += f"<td class='{morn_class}'>{morn_sign}{morning:.2f}%</td>"
+        html_content += f"<td class='{aft_class}'>{aft_sign}{afternoon:.2f}%</td></tr>"
     html_content += "</table>"
 else:
     html_content += "<p>⚠️ No small cap data available</p>"
 
 # Bottom 5
-html_content += "<h3>📉 Bottom 5 Performers (Multiple Timeframes)</h3>"
+html_content += "<h3>📉 Bottom 5 Performers (Intraday Tracking)</h3>"
 if bottom_5_stocks:
-    html_content += "<table><tr><th>Symbol</th><th>Price</th><th>1-Day %</th><th>1-Week %</th><th>3-Month %</th><th>6-Month %</th></tr>"
-    for sym, price, day_1, week_1, month_3, month_6 in bottom_5_stocks:
+    html_content += "<table><tr><th>Symbol</th><th>Price</th><th>1-Day %</th><th>Gap %</th><th>Morning %</th><th>Afternoon %</th></tr>"
+    for sym, price, day_1, gap, morning, afternoon in bottom_5_stocks:
         d1_class = "negative"
-        w1_class = "positive" if week_1 > 0 else "negative" if week_1 < 0 else "neutral"
-        m3_class = "positive" if month_3 > 0 else "negative" if month_3 < 0 else "neutral"
-        m6_class = "positive" if month_6 > 0 else "negative" if month_6 < 0 else "neutral"
+        gap_class = "positive" if gap > 0 else "negative" if gap < 0 else "neutral"
+        morn_class = "positive" if morning > 0 else "negative" if morning < 0 else "neutral"
+        aft_class = "positive" if afternoon > 0 else "negative" if afternoon < 0 else "neutral"
         
-        w1_sign = "+" if week_1 > 0 else ""
-        m3_sign = "+" if month_3 > 0 else ""
-        m6_sign = "+" if month_6 > 0 else ""
+        gap_sign = "+" if gap > 0 else ""
+        morn_sign = "+" if morning > 0 else ""
+        aft_sign = "+" if afternoon > 0 else ""
         
         html_content += f"<tr><td>{sym}</td><td>₹{price:.2f}</td>"
         html_content += f"<td class='{d1_class}'>{day_1:.2f}%</td>"
-        html_content += f"<td class='{w1_class}'>{w1_sign}{week_1:.2f}%</td>"
-        html_content += f"<td class='{m3_class}'>{m3_sign}{month_3:.2f}%</td>"
-        html_content += f"<td class='{m6_class}'>{m6_sign}{month_6:.2f}%</td></tr>"
+        html_content += f"<td class='{gap_class}'>{gap_sign}{gap:.2f}%</td>"
+        html_content += f"<td class='{morn_class}'>{morn_sign}{morning:.2f}%</td>"
+        html_content += f"<td class='{aft_class}'>{aft_sign}{afternoon:.2f}%</td></tr>"
     html_content += "</table>"
 else:
     html_content += "<p>⚠️ No bottom performer data available</p>"
